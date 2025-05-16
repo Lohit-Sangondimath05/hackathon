@@ -1,103 +1,350 @@
-import re
+import customtkinter as ctk
+import threading
 import pandas as pd
-from requests_html import HTMLSession
-from urllib.parse import urljoin
+import re
+import requests
+import random
 import time
+import webbrowser
+from bs4 import BeautifulSoup
+from tkinter import messagebox, filedialog
+from serpapi import GoogleSearch
+from fake_useragent import UserAgent
+from urllib.parse import urlparse, urljoin
 
-def extract_contact_info_from_url(url):
-    session = HTMLSession()
+SERPAPI_KEY = "00939b326b6715a3921068c5faf81d5f0e569813f4b61feb4dc7b524632f1090"
+PROXIES = []
+
+def get_random_proxy():
+    return {"http": random.choice(PROXIES), "https": random.choice(PROXIES)} if PROXIES else None
+
+def get_random_headers():
+    return {"User-Agent": UserAgent().random}
+
+def is_valid_url(url):
+    try:
+        parsed = urlparse(url)
+        return parsed.scheme in ("http", "https") and bool(parsed.netloc)
+    except:
+        return False
+
+def is_valid_email(email):
+    return re.match(r"[^@]+@[^@]+\.[^@]+", email)
+
+def is_valid_phone(number):
+    digits_only = re.sub(r"\D", "", number)
+    if len(digits_only) < 8 or len(digits_only) > 15:
+        return False
+    if re.search(r"\b(19|20|21)\d{2}\b", number):
+        return False
+    if re.search(r"\b\d{4}\s*-\s*\d{4}\b", number):
+        return False
+    if not re.match(r"^\+?\d[\d\s\-\(\)]{7,}\d$", number):
+        return False
+    return True
+
+def generate_search_links(country, city, industry, count, log_callback):
+    query = f"{industry} in {city}, {country}"
+    log_callback(f"Searching: {query}")
+    search = GoogleSearch({"q": query, "api_key": SERPAPI_KEY, "num": count})
+    results = search.get_dict()
+    links = []
+    for result in results.get("organic_results", []):
+        link = result.get("link")
+        if link:
+            links.append({
+                "Country": country,
+                "City": city,
+                "Industry": industry,
+                "URL": link
+            })
+    return links
+
+def is_shopify_site(soup):
+    return "cdn.shopify.com" in str(soup) or "Shopify" in soup.text
+
+def is_domain_active_and_fast(url, timeout=5):
+    try:
+        start = time.time()
+        r = requests.get(url, headers=get_random_headers(), proxies=get_random_proxy(), timeout=timeout)
+        return r.status_code == 200 and (time.time() - start) <= timeout
+    except:
+        return False
+
+def extract_emails_and_phones_from_url(url, log_callback):
     emails = set()
     phones = set()
+    visited = set()
 
-    try:
-        print(f"🔍 Processing URL: {url}")
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = session.get(url, headers=headers, timeout=20)
-
+    def extract(url):
+        if url in visited or not is_valid_url(url):
+            return None
+        visited.add(url)
         try:
-            response.html.render(timeout=30, sleep=2)
-        except Exception as render_error:
-            print(f"⚠️ Render failed for {url}: {render_error}")
-            return [], []
+            log_callback(f"Fetching: {url}")
+            r = requests.get(url, headers=get_random_headers(), proxies=get_random_proxy(), timeout=10)
+            soup = BeautifulSoup(r.text, 'html.parser')
+            text = soup.get_text(separator=' ', strip=True)
 
-        page_html = response.html.html
+            found_emails = re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", text)
+            emails.update(found_emails)
 
-        if page_html:
-            # Extract emails
-            emails.update(re.findall(r"[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}", page_html))
+            phones_found = re.findall(r"(\+?\d[\d\s\-\(\)]{7,}\d)", text)
+            filtered_phones = [p.strip() for p in phones_found if is_valid_phone(p)]
+            phones.update(filtered_phones)
 
-            # Extract phone numbers
-            phone_pattern = r"""(?:(?:\+?\d{1,3}[-.\s]?)?    # Optional country code
-                                 (?:\(?\d{3}\)?[-.\s]?)?     # Optional area code
-                                 \d{3}[-.\s]?\d{4})"""       # Local number
-            phones.update(re.findall(phone_pattern, page_html, re.VERBOSE))
+            for a in soup.find_all("a", href=True):
+                href = a['href'].lower()
+                if any(x in href for x in ['contact', 'about']) and urlparse(href).netloc == "":
+                    new_url = urljoin(url, a['href'])
+                    extract(new_url)
 
-            # Extract mailto and tel links
-            for link in response.html.find('a'):
-                href = link.attrs.get('href', '')
-                if href.startswith('mailto:'):
-                    email = href.replace('mailto:', '').split('?')[0]
-                    if email:
-                        emails.add(email)
-                elif href.startswith('tel:'):
-                    phone = href.replace('tel:', '').strip()
-                    if phone:
-                        phones.add(phone)
+            return soup
+        except Exception as e:
+            log_callback(f"[ERROR] {url}: {e}")
+            return None
 
-        print(f"✅ Found {len(emails)} emails and {len(phones)} phone numbers on {url}")
-    except Exception as e:
-        print(f"❌ Error fetching {url}: {e}")
-    finally:
-        session.close()
+    soup = extract(url)
+    return soup, list(emails), list(phones)
 
-    return list(emails), list(phones)
+class ScraperApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("\U0001F4EC Advanced Web Scraper - Emails & Phones")
+        self.root.geometry("1000x720")
+        ctk.set_appearance_mode("Dark")
+        ctk.set_default_color_theme("dark-blue")
+        self.final_data = []
+        self.create_widgets()
 
-def main():
-    input_csv = "search_links.csv"
-    output_csv = "final_contacts.csv"
-    results = []
+    def create_widgets(self):
+        self.input_frame = ctk.CTkFrame(self.root)
+        self.input_frame.pack(padx=10, pady=10, fill="x")
 
-    try:
-        df = pd.read_csv(input_csv, encoding='utf-8')
-    except Exception as e:
-        print(f"❌ Error reading {input_csv}: {e}")
-        return
+        ctk.CTkLabel(self.input_frame, text="\U0001F30D Country").grid(row=0, column=0, sticky="w", padx=10, pady=5)
+        self.country_var = ctk.CTkEntry(self.input_frame, width=200)
+        self.country_var.grid(row=0, column=1)
 
-    if "URL" not in df.columns:
-        print(f"❌ 'URL' column missing in CSV")
-        return
+        ctk.CTkLabel(self.input_frame, text="\U0001F3D9️ City").grid(row=1, column=0, sticky="w", padx=10, pady=5)
+        self.city_var = ctk.CTkEntry(self.input_frame, width=200)
+        self.city_var.grid(row=1, column=1)
 
-    for index, row in df.iterrows():
-        url = str(row.get("URL", "")).strip()
-        if not url.startswith("http"):
-            print(f"⚠️ Skipping invalid URL at row {index}")
-            continue
+        ctk.CTkLabel(self.input_frame, text="\U0001F4BC Industry").grid(row=2, column=0, sticky="w", padx=10, pady=5)
+        self.industry_var = ctk.CTkEntry(self.input_frame, width=200)
+        self.industry_var.grid(row=2, column=1)
 
-        emails, phones = extract_contact_info_from_url(url)
+        ctk.CTkLabel(self.input_frame, text="\U0001F522 Result Count").grid(row=3, column=0, sticky="w", padx=10, pady=5)
+        self.count_var = ctk.CTkEntry(self.input_frame, width=100)
+        self.count_var.insert(0, "20")
+        self.count_var.grid(row=3, column=1)
 
-        base_data = {
-            "Country": row.get("Country", ""),
-            "City": row.get("City", ""),
-            "Industry": row.get("Industry", ""),
-            "Website URL": url
-        }
+        self.filter_frame = ctk.CTkFrame(self.root)
+        self.filter_frame.pack(pady=10, padx=10, fill="x")
 
-        if not emails and not phones:
-            results.append({**base_data, "Email ID": "", "Phone Number": ""})
-        else:
-            max_items = max(len(emails), len(phones))
-            for i in range(max_items):
-                results.append({
-                    **base_data,
-                    "Email ID": emails[i] if i < len(emails) else "",
-                    "Phone Number": phones[i] if i < len(phones) else ""
+        ctk.CTkLabel(self.filter_frame, text="Filters:", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=10)
+        self.filter_active = ctk.CTkCheckBox(self.filter_frame, text="✅ Active Domain")
+        self.filter_active.grid(row=1, column=0, padx=10)
+
+        self.filter_shopify = ctk.CTkCheckBox(self.filter_frame, text="\U0001F6CD️ Shopify Sites")
+        self.filter_shopify.grid(row=1, column=1, padx=10)
+
+        self.filter_fast = ctk.CTkCheckBox(self.filter_frame, text="⚡ Fast Loading (≤5s)")
+        self.filter_fast.grid(row=1, column=2, padx=10)
+
+        ctk.CTkLabel(self.filter_frame, text="Exclude Domains (comma-separated):").grid(row=2, column=0, sticky="w", padx=10, pady=5)
+        self.exclude_domains_var = ctk.CTkEntry(self.filter_frame, width=400)
+        self.exclude_domains_var.grid(row=2, column=1, columnspan=3, sticky="w")
+
+        self.bottom_frame = ctk.CTkFrame(self.root)
+        self.bottom_frame.pack(pady=10, padx=10, fill="both", expand=True)
+
+        self.log_frame = ctk.CTkFrame(self.bottom_frame)
+        self.log_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+
+        ctk.CTkLabel(self.log_frame, text="\U0001F4DD Log", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=10, pady=(5, 0))
+        self.log_box = ctk.CTkTextbox(self.log_frame, height=280)
+        self.log_box.pack(fill="both", expand=True, padx=10, pady=10)
+        self.log_box.configure(state="disabled")
+
+        self.results_frame = ctk.CTkScrollableFrame(self.bottom_frame)
+        self.results_frame.pack(side="left", fill="both", expand=True, padx=(5, 0))
+
+        self.btn_frame = ctk.CTkFrame(self.root)
+        self.btn_frame.pack(pady=10, fill="x")
+
+        self.start_btn = ctk.CTkButton(self.btn_frame, text="\U0001F680 Start Scraping", command=self.start_scraping, fg_color="green")
+        self.start_btn.pack(side="left", padx=10)
+
+        self.save_btn = ctk.CTkButton(self.btn_frame, text="\U0001F4BE Save CSV", command=self.save_csv, state="disabled", fg_color="blue")
+        self.save_btn.pack(side="left", padx=10)
+
+    def log(self, msg):
+        self.log_box.configure(state="normal")
+        self.log_box.insert("end", msg + "\n")
+        self.log_box.see("end")
+        self.log_box.configure(state="disabled")
+
+    def update_results(self, url, emails, phones):
+        result_box = ctk.CTkFrame(self.results_frame)
+        result_box.pack(fill="x", pady=5, padx=5)
+
+        def create_clickable_label(parent, text, link, is_mail=False):
+            label = ctk.CTkLabel(parent, text=text, text_color="skyblue", cursor="hand2")
+            label.pack(anchor="w")
+            label.bind("<Button-1>", lambda e: webbrowser.open(f"mailto:{link}" if is_mail else link))
+
+        def add_section(label, items, is_mail=False, clickable=True):
+            frame = ctk.CTkFrame(result_box)
+            frame.pack(fill="x", pady=3, padx=5)
+            ctk.CTkLabel(frame, text=label, font=ctk.CTkFont(weight="bold")).pack(anchor="w")
+            if not items:
+                ctk.CTkLabel(frame, text="None").pack(anchor="w")
+            else:
+                for item in items:
+                    if clickable:
+                        create_clickable_label(frame, item, item, is_mail)
+                    else:
+                        ctk.CTkLabel(frame, text=item).pack(anchor="w")
+
+        add_section("🌐 URL", [url])
+        add_section("📧 Emails", emails, is_mail=True)
+        add_section("📞 Phones", phones, clickable=False)
+        ctk.CTkLabel(result_box, text="─" * 100).pack(pady=(5, 0))
+
+    def start_scraping(self):
+        country = self.country_var.get().strip()
+        city = self.city_var.get().strip()
+        industry = self.industry_var.get().strip()
+        count_str = self.count_var.get().strip()
+
+        if not (country and city and industry and count_str.isdigit()):
+            messagebox.showwarning("Input Error", "Please fill in all fields correctly.")
+            return
+
+        self.start_btn.configure(state="disabled")
+        self.save_btn.configure(state="disabled")
+        self.final_data.clear()
+        self.log_box.configure(state="normal")
+        self.log_box.delete("1.0", "end")
+        self.log_box.configure(state="disabled")
+
+        for widget in self.results_frame.winfo_children():
+            widget.destroy()
+
+        threading.Thread(target=self.scrape, args=(country, city, industry, int(count_str)), daemon=True).start()
+
+    def scrape(self, country, city, industry, count):
+        try:
+            links = generate_search_links(country, city, industry, count, self.log)
+            links = [link for link in links if is_valid_url(link["URL"])]
+
+            exclude_domains_input = self.exclude_domains_var.get().strip()
+            exclude_domains = [d.strip().lower() for d in exclude_domains_input.split(",")] if exclude_domains_input else []
+
+            seen = set()
+
+            for idx, row in enumerate(links, 1):
+                url = row["URL"]
+                if url in seen:
+                    continue
+                seen.add(url)
+
+                domain = urlparse(url).netloc.lower()
+                if any(ex_domain in domain for ex_domain in exclude_domains):
+                    self.log(f"❌ Skipped excluded domain: {domain}")
+                    continue
+
+                self.log(f"[{idx}/{len(links)}] {url}")
+
+                if self.filter_active.get() and not is_domain_active_and_fast(url):
+                    self.log("❌ Skipped: inactive or slow")
+                    continue
+
+                soup, emails, phones = extract_emails_and_phones_from_url(url, self.log)
+
+                if self.filter_shopify.get() and (not soup or not is_shopify_site(soup)):
+                    self.log("❌ Skipped: not Shopify")
+                    continue
+
+                if self.filter_fast.get():
+                    try:
+                        start = time.time()
+                        r = requests.get(url, headers=get_random_headers(), timeout=5)
+                        if time.time() - start > 5:
+                            self.log("❌ Skipped: too slow")
+                            continue
+                    except:
+                        self.log("❌ Skipped: error loading")
+                        continue
+
+                valid_emails = [email for email in emails if is_valid_email(email)]
+                valid_phones = [phone for phone in phones if is_valid_phone(phone)]
+
+                if not valid_phones:
+                    self.log("❌ Skipped: no valid phone numbers")
+                    continue
+
+                self.final_data.append({
+                    **row,
+                    "Emails": ", ".join(valid_emails),
+                    "Phones": ", ".join(valid_phones)
                 })
 
-    try:
-        pd.DataFrame(results).to_csv(output_csv, index=False, encoding='utf-8-sig')
-        print(f"\n📁 Saved {len(results)} rows to {output_csv}")
-    except Exception as e:
-        print(f"❌ Failed to save to {output_csv}: {e}")
+                self.update_results(url, valid_emails, valid_phones)
+
+            self.log("✅ Scraping complete.")
+            messagebox.showinfo("Done", "Scraping finished.")
+            self.save_btn.configure(state="normal")
+        except Exception as e:
+            self.log(f"[ERROR] {e}")
+            messagebox.showerror("Error", str(e))
+        finally:
+            self.start_btn.configure(state="normal")
+
+    def save_csv(self):
+        if not self.final_data:
+            messagebox.showwarning("Nothing to save", "No data to save.")
+            return
+        path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])
+        if path:
+            pd.DataFrame(self.final_data).to_csv(path, index=False)
+            messagebox.showinfo("Saved", f"Data saved to:\n{path}")
+
+class SplashScreen(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.geometry("400x250+{}+{}".format(
+            int(self.winfo_screenwidth()/2 - 200),
+            int(self.winfo_screenheight()/2 - 125)
+        ))
+        self.overrideredirect(True)
+        self.configure(fg_color="#1f1f1f")
+
+        label = ctk.CTkLabel(self, text="🔍 Advanced Web Scraper", font=ctk.CTkFont(size=24, weight="bold"))
+        label.pack(expand=True)
+
+        sublabel = ctk.CTkLabel(self, text="Loading, please wait...", font=ctk.CTkFont(size=14))
+        sublabel.pack(pady=(0, 30))
+
+        self.after(3000, self.destroy)
+
+def main():
+    ctk.set_appearance_mode("Dark")
+    ctk.set_default_color_theme("dark-blue")
+    
+    root = ctk.CTk()
+    root.withdraw()
+    
+    splash = SplashScreen(root)
+    splash.update()
+    
+    def show_main():
+        splash.destroy()
+        root.deiconify()
+        ScraperApp(root)
+    
+    root.after(3000, show_main)
+    root.mainloop()
 
 if __name__ == "__main__":
     main()
