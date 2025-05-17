@@ -1,5 +1,3 @@
-# Install with: pip install customtkinter requests fake-useragent beautifulsoup4 serpapi pandas
-
 import customtkinter as ctk
 import threading
 import pandas as pd
@@ -7,14 +5,39 @@ import re
 import requests
 import random
 import time
+import webbrowser
 from bs4 import BeautifulSoup
 from tkinter import messagebox, filedialog
 from serpapi import GoogleSearch
 from fake_useragent import UserAgent
 from urllib.parse import urlparse, urljoin
+import pyrebase
+
+# --- Firebase config ---
+config ={
+  "apiKey": "AIzaSyDzEEuBlyeSfEgAT5yuL9dUkFZjXzRdpeo",
+  "authDomain": "first1-59246.firebaseapp.com",
+  "databaseURL": "https://first1-59246-id-default-rtdb.firebaseio.com",
+  "projectId": "first1-59246",
+  "storageBucket": "first1-59246.firebasestorage.app",
+  "messagingSenderId": "294836761000",
+  "appId": "1:294836761000:web:39dcfcdb68e4e445726d9d",
+  "measurementId": "G-7FHFMFCCKL"
+  
+}
+
+firebase = pyrebase.initialize_app(config)
+auth = firebase.auth()
 
 SERPAPI_KEY = "00939b326b6715a3921068c5faf81d5f0e569813f4b61feb4dc7b524632f1090"
 PROXIES = []
+
+def firebase_sign_in(email, password):
+    try:
+        user = auth.sign_in_with_email_and_password(email, password)
+        return user
+    except:
+        return None
 
 def get_random_proxy():
     return {"http": random.choice(PROXIES), "https": random.choice(PROXIES)} if PROXIES else None
@@ -31,6 +54,18 @@ def is_valid_url(url):
 
 def is_valid_email(email):
     return re.match(r"[^@]+@[^@]+\.[^@]+", email)
+
+def is_valid_phone(number):
+    digits_only = re.sub(r"\D", "", number)
+    if len(digits_only) < 8 or len(digits_only) > 15:
+        return False
+    if re.search(r"\b(19|20|21)\d{2}\b", number):
+        return False
+    if re.search(r"\b\d{4}\s*-\s*\d{4}\b", number):
+        return False
+    if not re.match(r"^\+?\d[\d\s\-\(\)]{7,}\d$", number):
+        return False
+    return True
 
 def generate_search_links(country, city, industry, count, log_callback):
     query = f"{industry} in {city}, {country}"
@@ -65,21 +100,10 @@ def extract_emails_and_phones_from_url(url, log_callback):
     phones = set()
     visited = set()
 
-    def is_possible_phone(number):
-        digits_only = re.sub(r"\D", "", number)
-        if len(digits_only) < 8:
-            return False
-        if re.search(r"\b(19|20|21)\d{2}\b", number):
-            return False
-        if re.search(r"\b\d{4}\s*-\s*\d{4}\b", number):
-            return False
-        return True
-
     def extract(url):
         if url in visited or not is_valid_url(url):
             return None
         visited.add(url)
-
         try:
             log_callback(f"Fetching: {url}")
             r = requests.get(url, headers=get_random_headers(), proxies=get_random_proxy(), timeout=10)
@@ -90,7 +114,7 @@ def extract_emails_and_phones_from_url(url, log_callback):
             emails.update(found_emails)
 
             phones_found = re.findall(r"(\+?\d[\d\s\-\(\)]{7,}\d)", text)
-            filtered_phones = [p.strip() for p in phones_found if is_possible_phone(p)]
+            filtered_phones = [p.strip() for p in phones_found if is_valid_phone(p)]
             phones.update(filtered_phones)
 
             for a in soup.find_all("a", href=True):
@@ -107,14 +131,142 @@ def extract_emails_and_phones_from_url(url, log_callback):
     soup = extract(url)
     return soup, list(emails), list(phones)
 
+
+# ----------- Login Screen --------------
+
+class LoginScreen(ctk.CTk):
+    def __init__(self, on_login_success):
+        super().__init__()
+        self.on_login_success = on_login_success
+        self.title("🔐 Firebase Login")
+        self.geometry("400x350+{}+{}".format(
+            int(self.winfo_screenwidth()/2 - 200),
+            int(self.winfo_screenheight()/2 - 175)
+        ))
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("dark-blue")
+        self.create_widgets()
+
+    def create_widgets(self):
+        frame = ctk.CTkFrame(self)
+        frame.pack(padx=20, pady=20, fill="both", expand=True)
+
+        ctk.CTkLabel(frame, text="Email:").pack(pady=(10, 5))
+        self.email_entry = ctk.CTkEntry(frame, width=300)
+        self.email_entry.pack()
+
+        ctk.CTkLabel(frame, text="Password:").pack(pady=(10, 5))
+        self.password_entry = ctk.CTkEntry(frame, width=300, show="*")
+        self.password_entry.pack()
+
+        self.login_btn = ctk.CTkButton(frame, text="Login", command=self.login)
+        self.login_btn.pack(pady=20)
+
+        self.register_btn = ctk.CTkButton(frame, text="Register", command=self.open_register)
+        self.register_btn.pack(pady=(0, 10))
+
+    def login(self):
+        email = self.email_entry.get().strip()
+        password = self.password_entry.get().strip()
+        if not email or not password:
+            messagebox.showwarning("Input Error", "Please enter both email and password.")
+            return
+        result = firebase_sign_in(email, password)
+        if result:
+            messagebox.showinfo("Success", "Login successful!")
+            self.destroy()
+            self.on_login_success()
+        else:
+            messagebox.showerror("Login Failed", "Invalid email or password.")
+
+    def open_register(self):
+        RegisterScreen(self)
+
+
+class RegisterScreen(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.title("🔐 Register New User")
+        self.geometry("400x400+{}+{}".format(
+            int(self.winfo_screenwidth()/2 - 200),
+            int(self.winfo_screenheight()/2 - 200)
+        ))
+        ctk.set_appearance_mode("dark")
+        ctk.set_default_color_theme("dark-blue")
+        self.create_widgets()
+
+    def create_widgets(self):
+        frame = ctk.CTkFrame(self)
+        frame.pack(padx=20, pady=20, fill="both", expand=True)
+
+        ctk.CTkLabel(frame, text="Email:").pack(pady=(10, 5))
+        self.email_entry = ctk.CTkEntry(frame, width=300)
+        self.email_entry.pack()
+
+        ctk.CTkLabel(frame, text="Password (min 6 chars):").pack(pady=(10, 5))
+        self.password_entry = ctk.CTkEntry(frame, width=300, show="*")
+        self.password_entry.pack()
+
+        ctk.CTkLabel(frame, text="Confirm Password:").pack(pady=(10, 5))
+        self.confirm_password_entry = ctk.CTkEntry(frame, width=300, show="*")
+        self.confirm_password_entry.pack()
+
+        self.register_btn = ctk.CTkButton(frame, text="Register", command=self.register)
+        self.register_btn.pack(pady=20)
+
+    def register(self):
+        email = self.email_entry.get().strip()
+        password = self.password_entry.get().strip()
+        confirm_password = self.confirm_password_entry.get().strip()
+
+        if not email or not password or not confirm_password:
+            messagebox.showwarning("Input Error", "Please fill all fields.")
+            return
+        if password != confirm_password:
+            messagebox.showwarning("Input Error", "Passwords do not match.")
+            return
+        if len(password) < 6:
+            messagebox.showwarning("Input Error", "Password must be at least 6 characters.")
+            return
+
+        try:
+            auth.create_user_with_email_and_password(email, password)
+            messagebox.showinfo("Success", "Registration successful! You can now log in.")
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to register user.\n{e}")
+
+
+# ----------- Splash Screen --------------
+
+class SplashScreen(ctk.CTkToplevel):
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.geometry("400x250+{}+{}".format(
+            int(self.winfo_screenwidth()/2 - 200),
+            int(self.winfo_screenheight()/2 - 125)
+        ))
+        self.overrideredirect(True)
+        self.configure(fg_color="#1f1f1f")
+
+        label = ctk.CTkLabel(self, text="🔍 Advanced Web Scraper", font=ctk.CTkFont(size=24, weight="bold"))
+        label.pack(expand=True)
+
+        sublabel = ctk.CTkLabel(self, text="Loading, please wait...", font=ctk.CTkFont(size=14))
+        sublabel.pack(pady=(0, 30))
+
+        self.after(3000, self.destroy)
+
+
+# ----------- Main Scraper App --------------
+
 class ScraperApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("📬 Advanced Web Scraper - Emails & Phones")
+        self.root.title("\U0001F4EC Advanced Web Scraper - Emails & Phones")
         self.root.geometry("1000x720")
         ctk.set_appearance_mode("Dark")
         ctk.set_default_color_theme("dark-blue")
-
         self.final_data = []
         self.create_widgets()
 
@@ -122,19 +274,19 @@ class ScraperApp:
         self.input_frame = ctk.CTkFrame(self.root)
         self.input_frame.pack(padx=10, pady=10, fill="x")
 
-        ctk.CTkLabel(self.input_frame, text="🌍 Country").grid(row=0, column=0, sticky="w", padx=10, pady=5)
+        ctk.CTkLabel(self.input_frame, text="\U0001F30D Country").grid(row=0, column=0, sticky="w", padx=10, pady=5)
         self.country_var = ctk.CTkEntry(self.input_frame, width=200)
         self.country_var.grid(row=0, column=1)
 
-        ctk.CTkLabel(self.input_frame, text="🏙️ City").grid(row=1, column=0, sticky="w", padx=10, pady=5)
+        ctk.CTkLabel(self.input_frame, text="\U0001F3D9️ City").grid(row=1, column=0, sticky="w", padx=10, pady=5)
         self.city_var = ctk.CTkEntry(self.input_frame, width=200)
         self.city_var.grid(row=1, column=1)
 
-        ctk.CTkLabel(self.input_frame, text="💼 Industry").grid(row=2, column=0, sticky="w", padx=10, pady=5)
+        ctk.CTkLabel(self.input_frame, text="\U0001F4BC Industry").grid(row=2, column=0, sticky="w", padx=10, pady=5)
         self.industry_var = ctk.CTkEntry(self.input_frame, width=200)
         self.industry_var.grid(row=2, column=1)
 
-        ctk.CTkLabel(self.input_frame, text="🔢 Result Count").grid(row=3, column=0, sticky="w", padx=10, pady=5)
+        ctk.CTkLabel(self.input_frame, text="\U0001F522 Result Count").grid(row=3, column=0, sticky="w", padx=10, pady=5)
         self.count_var = ctk.CTkEntry(self.input_frame, width=100)
         self.count_var.insert(0, "20")
         self.count_var.grid(row=3, column=1)
@@ -142,151 +294,147 @@ class ScraperApp:
         self.filter_frame = ctk.CTkFrame(self.root)
         self.filter_frame.pack(pady=10, padx=10, fill="x")
 
-        ctk.CTkLabel(self.filter_frame, text="Filters:", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, columnspan=3, sticky="w", padx=10)
-
+        ctk.CTkLabel(self.filter_frame, text="Filters:", font=ctk.CTkFont(size=14, weight="bold")).grid(row=0, column=0, columnspan=4, sticky="w", padx=10)
         self.filter_active = ctk.CTkCheckBox(self.filter_frame, text="✅ Active Domain")
         self.filter_active.grid(row=1, column=0, padx=10)
 
-        self.filter_shopify = ctk.CTkCheckBox(self.filter_frame, text="🛍️ Shopify Sites")
+        self.filter_shopify = ctk.CTkCheckBox(self.filter_frame, text="\U0001F6CD️ Shopify Sites")
         self.filter_shopify.grid(row=1, column=1, padx=10)
 
-        self.filter_fast = ctk.CTkCheckBox(self.filter_frame, text="⚡ Fast Loading (≤5s)")
-        self.filter_fast.grid(row=1, column=2, padx=10)
+        self.filter_email = ctk.CTkCheckBox(self.filter_frame, text="📧 Emails")
+        self.filter_email.grid(row=1, column=2, padx=10)
 
-        self.bottom_frame = ctk.CTkFrame(self.root)
-        self.bottom_frame.pack(pady=10, padx=10, fill="both", expand=True)
+        self.filter_phone = ctk.CTkCheckBox(self.filter_frame, text="📞 Phones")
+        self.filter_phone.grid(row=1, column=3, padx=10)
 
-        self.log_frame = ctk.CTkFrame(self.bottom_frame)
-        self.log_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
+        self.run_btn = ctk.CTkButton(self.root, text="Start Scraping", command=self.start_scraping)
+        self.run_btn.pack(pady=20)
 
-        ctk.CTkLabel(self.log_frame, text="📝 Log", font=ctk.CTkFont(size=16, weight="bold")).pack(anchor="w", padx=10, pady=(5, 0))
-        self.log_box = ctk.CTkTextbox(self.log_frame, height=280)
-        self.log_box.pack(fill="both", expand=True, padx=10, pady=10)
-        self.log_box.configure(state="disabled")
+        self.log_text = ctk.CTkTextbox(self.root, height=15)
+        self.log_text.pack(padx=10, pady=10, fill="both", expand=True)
 
-        self.results_frame = ctk.CTkScrollableFrame(self.bottom_frame)
-        self.results_frame.pack(side="left", fill="both", expand=True, padx=(5, 0))
+        self.save_btn = ctk.CTkButton(self.root, text="Save Results", command=self.save_results, state="disabled")
+        self.save_btn.pack(pady=(0, 20))
 
-        self.btn_frame = ctk.CTkFrame(self.root)
-        self.btn_frame.pack(pady=10, fill="x")
-
-        self.start_btn = ctk.CTkButton(self.btn_frame, text="🚀 Start Scraping", command=self.start_scraping, fg_color="green")
-        self.start_btn.pack(side="left", padx=10)
-
-        self.save_btn = ctk.CTkButton(self.btn_frame, text="💾 Save CSV", command=self.save_csv, state="disabled", fg_color="blue")
-        self.save_btn.pack(side="left", padx=10)
-
-    def log(self, msg):
-        self.log_box.configure(state="normal")
-        self.log_box.insert("end", msg + "\n")
-        self.log_box.see("end")
-        self.log_box.configure(state="disabled")
-
-    def update_results(self, url, emails, phones):
-        result_box = ctk.CTkFrame(self.results_frame)
-        result_box.pack(fill="x", pady=5, padx=5)
-
-        def add_section(label, items):
-            frame = ctk.CTkFrame(result_box)
-            frame.pack(fill="x", pady=3, padx=5)
-            ctk.CTkLabel(frame, text=label, font=ctk.CTkFont(weight="bold")).pack(anchor="w")
-            for item in items or ["None"]:
-                ctk.CTkLabel(frame, text=item).pack(anchor="w")
-
-        add_section("🌐 URL", [url])
-        add_section("📧 Emails", emails)
-        add_section("📞 Phones", phones)
-        ctk.CTkLabel(result_box, text="─" * 100).pack(pady=(5, 0))
+    def log(self, message):
+        self.log_text.insert("end", message + "\n")
+        self.log_text.see("end")
+        self.root.update()
 
     def start_scraping(self):
         country = self.country_var.get().strip()
         city = self.city_var.get().strip()
         industry = self.industry_var.get().strip()
-        count_str = self.count_var.get().strip()
-
-        if not (country and city and industry and count_str.isdigit()):
-            messagebox.showwarning("Input Error", "Please fill in all fields correctly.")
-            return
-
-        self.start_btn.configure(state="disabled")
-        self.save_btn.configure(state="disabled")
-        self.final_data.clear()
-        self.log_box.configure(state="normal")
-        self.log_box.delete("1.0", "end")
-        self.log_box.configure(state="disabled")
-
-        for widget in self.results_frame.winfo_children():
-            widget.destroy()
-
-        threading.Thread(target=self.scrape, args=(country, city, industry, int(count_str)), daemon=True).start()
-
-    def scrape(self, country, city, industry, count):
         try:
-            links = generate_search_links(country, city, industry, count, self.log)
-            links = [link for link in links if is_valid_url(link["URL"])]
-            seen = set()
-
-            for idx, row in enumerate(links, 1):
-                url = row["URL"]
-                if url in seen:
-                    continue
-                seen.add(url)
-                self.log(f"[{idx}/{len(links)}] {url}")
-
-                if self.filter_active.get() and not is_domain_active_and_fast(url):
-                    self.log("❌ Skipped: inactive or slow")
-                    continue
-
-                soup, emails, phones = extract_emails_and_phones_from_url(url, self.log)
-
-                if self.filter_shopify.get() and (not soup or not is_shopify_site(soup)):
-                    self.log("❌ Skipped: not Shopify")
-                    continue
-
-                if self.filter_fast.get():
-                    try:
-                        start = time.time()
-                        r = requests.get(url, headers=get_random_headers(), timeout=5)
-                        if time.time() - start > 5:
-                            self.log("❌ Skipped: too slow")
-                            continue
-                    except:
-                        self.log("❌ Skipped: error loading")
-                        continue
-
-                valid_emails = [email for email in emails if is_valid_email(email)]
-
-                if not valid_emails and not phones:
-                    self.log("❌ Skipped: no emails or phones found")
-                    continue
-
-                self.final_data.append({
-                    **row,
-                    "Emails": ", ".join(valid_emails),
-                    "Phones": ", ".join(phones)
-                })
-
-                self.update_results(url, valid_emails, phones)
-
-            self.log("✅ Scraping complete.")
-            messagebox.showinfo("Done", "Scraping finished.")
-            self.save_btn.configure(state="normal")
-        except Exception as e:
-            self.log(f"[ERROR] {e}")
-            messagebox.showerror("Error", str(e))
-        finally:
-            self.start_btn.configure(state="normal")
-
-    def save_csv(self):
-        if not self.final_data:
-            messagebox.showwarning("Nothing to save", "No data to save.")
+            count = int(self.count_var.get().strip())
+        except:
+            messagebox.showerror("Input Error", "Result count must be a number.")
             return
-        path = filedialog.asksaveasfilename(defaultextension=".csv", filetypes=[("CSV files", "*.csv")])
-        if path:
-            pd.DataFrame(self.final_data).to_csv(path, index=False)
-            messagebox.showinfo("Saved", f"Data saved to:\n{path}")
+
+        if not country or not city or not industry:
+            messagebox.showwarning("Input Error", "Please fill all required fields.")
+            return
+
+        self.final_data = []
+        self.log_text.delete("0.0", "end")
+        self.save_btn.configure(state="disabled")
+        self.run_btn.configure(state="disabled")
+
+        threading.Thread(target=self.scrape_process, args=(country, city, industry, count), daemon=True).start()
+
+    def scrape_process(self, country, city, industry, count):
+        self.log("Starting search for URLs...")
+        links = generate_search_links(country, city, industry, count, self.log)
+
+        filter_active = self.filter_active.get()
+        filter_shopify = self.filter_shopify.get()
+        filter_email = self.filter_email.get()
+        filter_phone = self.filter_phone.get()
+
+        self.log(f"Found {len(links)} URLs. Starting detailed scraping...")
+
+        for idx, link_data in enumerate(links):
+            url = link_data["URL"]
+
+            if filter_active and not is_domain_active_and_fast(url):
+                self.log(f"[SKIP] Inactive or slow domain: {url}")
+                continue
+
+            soup, emails, phones = extract_emails_and_phones_from_url(url, self.log)
+            if not soup:
+                self.log(f"[ERROR] Could not fetch data from: {url}")
+                continue
+
+            if filter_shopify and not is_shopify_site(soup):
+                self.log(f"[SKIP] Not a Shopify site: {url}")
+                continue
+
+            if filter_email and not emails:
+                self.log(f"[SKIP] No emails found at: {url}")
+                continue
+
+            if filter_phone and not phones:
+                self.log(f"[SKIP] No phones found at: {url}")
+                continue
+
+            link_data["Emails"] = ", ".join(emails) if emails else ""
+            link_data["Phones"] = ", ".join(phones) if phones else ""
+            self.final_data.append(link_data)
+            self.log(f"[OK] Scraped {url}")
+
+        self.log(f"Scraping complete. Found {len(self.final_data)} valid results.")
+        self.save_btn.configure(state="normal")
+        self.run_btn.configure(state="normal")
+
+    def save_results(self):
+        if not self.final_data:
+            messagebox.showinfo("No Data", "No data to save.")
+            return
+
+        df = pd.DataFrame(self.final_data)
+        file_path = filedialog.asksaveasfilename(defaultextension=".xlsx",
+                                                 filetypes=[("Excel files", "*.xlsx"), ("CSV files", "*.csv")])
+        if file_path:
+            try:
+                if file_path.endswith(".csv"):
+                    df.to_csv(file_path, index=False)
+                else:
+                    df.to_excel(file_path, index=False)
+                messagebox.showinfo("Success", f"Results saved to {file_path}")
+            except Exception as e:
+                messagebox.showerror("Save Error", f"Failed to save file.\n{e}")
+
+
+# ----------- App launcher after login -----------
+
+def launch_app():
+    root = ctk.CTk()
+    root.withdraw()
+
+    splash = SplashScreen(root)
+    splash.update()
+
+    def show_main():
+        splash.destroy()
+        root.deiconify()
+        ScraperApp(root)
+
+    root.after(3000, show_main)
+    root.mainloop()
+
+
+# ----------- Main --------------
+
+def main():
+    ctk.set_appearance_mode("Dark")
+    ctk.set_default_color_theme("dark-blue")
+
+    def on_login_success():
+        launch_app()
+
+    login_screen = LoginScreen(on_login_success)
+    login_screen.mainloop()
+
 
 if __name__ == "__main__":
-    app = ctk.CTk()
-    ScraperApp(app)
-    app.mainloop()
+    main()
