@@ -898,7 +898,7 @@ def main():
 
     def on_login_success():
         launch_app()
-
+    
     login_screen = LoginScreen(on_login_success)
     login_screen.mainloop()
 
